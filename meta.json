@@ -1300,6 +1300,23 @@
     ]
   },
   {
+    "id": "cloudflare-ddns",
+    "name": "Cloudflare DDNS",
+    "version": "1.15.1",
+    "description": "A small, feature-rich, and robust Cloudflare DDNS updater.",
+    "logo": "cloudflare-ddns.svg",
+    "links": {
+      "github": "https://github.com/favonia/cloudflare-ddns",
+      "website": "https://github.com/favonia/cloudflare-ddns",
+      "docs": "https://github.com/favonia/cloudflare-ddns"
+    },
+    "tags": [
+      "cloud",
+      "networking",
+      "ddns"
+    ]
+  },
+  {
     "id": "cloudflared",
     "name": "Cloudflared",
     "version": "latest",
@@ -1307,8 +1324,8 @@
     "logo": "cloudflared.svg",
     "links": {
       "github": "https://github.com/cloudflare/cloudflared",
-      "website": "https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/",
-      "docs": "https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/"
+      "website": "https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/",
+      "docs": "https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/"
     },
     "tags": [
       "cloud",
@@ -4027,27 +4044,6 @@
     ]
   },
   {
-    "id": "moltbot",
-    "name": "Moltbot",
-    "version": "2026.1.25",
-    "description": "WhatsApp gateway CLI with Pi RPC agent - self-hosted AI-powered messaging platform",
-    "logo": "moltbot.svg",
-    "links": {
-      "github": "https://github.com/moltbot/moltbot",
-      "website": "https://molt.bot",
-      "docs": "https://docs.molt.bot"
-    },
-    "tags": [
-      "whatsapp",
-      "ai",
-      "messaging",
-      "chatbot",
-      "gateway",
-      "self-hosted",
-      "automation"
-    ]
-  },
-  {
     "id": "morphos",
     "name": "Morphos",
     "version": "latest",
@@ -4539,6 +4535,27 @@
       "ai",
       "database",
       "surrealdb"
+    ]
+  },
+  {
+    "id": "openclaw",
+    "name": "Openclaw",
+    "version": "2026.1.29",
+    "description": "WhatsApp gateway CLI with Pi RPC agent - self-hosted AI-powered messaging platform",
+    "logo": "openclaw.svg",
+    "links": {
+      "github": "https://github.com/openclaw/openclaw",
+      "website": "https://openclaw.ai/",
+      "docs": "https://docs.openclaw.ai/"
+    },
+    "tags": [
+      "whatsapp",
+      "ai",
+      "messaging",
+      "chatbot",
+      "gateway",
+      "self-hosted",
+      "automation"
     ]
   },
   {
