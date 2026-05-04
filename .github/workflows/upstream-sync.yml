@@ -136,6 +136,7 @@ jobs:
         if: steps.check.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           DATE=$(date +%Y-%m-%d)
 
@@ -151,7 +152,7 @@ jobs:
           fi
 
           # Check if a PR already exists for this branch
-          EXISTING=$(gh pr list --head "${{ steps.merge.outputs.branch }}" --state open --json number --jq '.[0].number')
+          EXISTING=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "${{ steps.merge.outputs.branch }}" --state open --json number --jq '.[0].number')
           if [ -n "$EXISTING" ]; then
             echo "PR #${EXISTING} already exists for this branch. Skipping creation."
             exit 0
@@ -173,6 +174,7 @@ jobs:
           fi
 
           gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
             --title "Upstream sync ${DATE}" \
             --body "$(cat <<EOF
           ## Upstream Sync
@@ -198,4 +200,4 @@ jobs:
           EOF
           )" \
             --base main \
-            --head "${GITHUB_REPOSITORY_OWNER}:${{ steps.merge.outputs.branch }}"
+            --head "${{ steps.merge.outputs.branch }}"
