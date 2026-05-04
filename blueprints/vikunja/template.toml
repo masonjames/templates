@@ -17,13 +17,3 @@ VIKUNJA_DATABASE_TYPE = "postgres"
 VIKUNJA_DATABASE_USER = "vikunja"
 VIKUNJA_DATABASE_DATABASE = "vikunja"
 VIKUNJA_SERVICE_JWTSECRET = "${jwt_secret}"
-
-[[config.mounts]]
-serviceName = "vikunja"
-volumeName = "vikunja-files"
-mountPath = "/app/vikunja/files"
-
-[[config.mounts]]
-serviceName = "db"
-volumeName = "vikunja-db"
-mountPath = "/var/lib/postgresql/data"
