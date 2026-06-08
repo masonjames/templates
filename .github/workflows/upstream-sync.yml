@@ -58,29 +58,39 @@ jobs:
 
           git checkout -B "$BRANCH"
 
+          write_overrides() {
+            if [ ! -f overrides/manifest.json ]; then
+              : > /tmp/override-blueprints.txt
+              return 0
+            fi
+
+            python3 - <<'PY' > /tmp/override-blueprints.txt
+          import json
+
+          with open("overrides/manifest.json") as f:
+              data = json.load(f)
+
+          for item in data.get("locally_modified", []):
+              print(item["id"])
+          PY
+          }
+
           # Attempt merge
           if ! git merge upstream/canary --no-edit; then
             echo "Merge conflicts detected. Resolving overrides..."
 
             # Read override manifest and resolve conflicts for our blueprints
-            if [ -f overrides/manifest.json ]; then
-              OVERRIDES=$(python3 -c "
-          import json, sys
-          with open('overrides/manifest.json') as f:
-              data = json.load(f)
-          for item in data.get('locally_modified', []):
-              print(item['id'])
-          ")
+            write_overrides
+            while IFS= read -r OVERRIDE_ID; do
+              [ -z "$OVERRIDE_ID" ] && continue
 
-              for OVERRIDE_ID in $OVERRIDES; do
-                # For overridden blueprints, keep our version
-                if git diff --name-only --diff-filter=U | grep -q "blueprints/${OVERRIDE_ID}/"; then
-                  echo "Preserving our override for: ${OVERRIDE_ID}"
-                  git checkout --ours "blueprints/${OVERRIDE_ID}/" 2>/dev/null || true
-                  git add "blueprints/${OVERRIDE_ID}/" 2>/dev/null || true
-                fi
-              done
-            fi
+              # For overridden blueprints, keep our version
+              if git diff --name-only --diff-filter=U | grep -q "blueprints/${OVERRIDE_ID}/"; then
+                echo "Preserving our override for: ${OVERRIDE_ID}"
+                git checkout --ours -- "blueprints/${OVERRIDE_ID}/" 2>/dev/null || true
+                git add "blueprints/${OVERRIDE_ID}/" 2>/dev/null || true
+              fi
+            done < /tmp/override-blueprints.txt
 
             # For everything else, accept theirs on remaining conflicts
             REMAINING=$(git diff --name-only --diff-filter=U)
@@ -94,6 +104,28 @@ jobs:
             fi
 
             git commit --no-edit || true
+          fi
+
+          write_overrides
+          if [ -s /tmp/override-blueprints.txt ]; then
+            echo "Restoring configured blueprint overrides from main..."
+            while IFS= read -r OVERRIDE_ID; do
+              [ -z "$OVERRIDE_ID" ] && continue
+
+              if git cat-file -e "origin/main:blueprints/${OVERRIDE_ID}" 2>/dev/null; then
+                echo "Restoring local override for: ${OVERRIDE_ID}"
+                git checkout origin/main -- "blueprints/${OVERRIDE_ID}/"
+                git add "blueprints/${OVERRIDE_ID}/"
+              else
+                echo "Override ${OVERRIDE_ID} is not present on origin/main; skipping."
+              fi
+            done < /tmp/override-blueprints.txt
+
+            if ! git diff --cached --quiet; then
+              git commit -m "fix: preserve local blueprint overrides"
+            else
+              echo "No override drift detected."
+            fi
           fi
 
           git push --force-with-lease origin "$BRANCH"
@@ -195,7 +227,7 @@ jobs:
           \`\`\`
           </details>
 
-          Blueprints in \`overrides/manifest.json\` were preserved (ours wins).
+          Blueprints in \`overrides/manifest.json\` were restored from \`main\` after the upstream merge.
           ${CURATED_NOTE}
           EOF
           )" \

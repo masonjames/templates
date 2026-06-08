@@ -5,7 +5,7 @@ This directory tracks blueprints that have been locally modified from their upst
 ## How it works
 
 - `manifest.json` lists every blueprint we've modified locally, along with the reason.
-- The daily `upstream-sync` workflow preserves our version for blueprints in this list (ours wins on merge conflicts).
+- The daily `upstream-sync` workflow restores our version for blueprints in this list from `main` after every upstream merge.
 - Client-portal and dockhand fetch overridden blueprints from this fork's raw URL instead of the CDN.
 
 ## Adding an override

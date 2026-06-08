@@ -11,6 +11,10 @@
     {
       "id": "ghost",
       "reason": "Node.js healthcheck for 301 redirect issue"
+    },
+    {
+      "id": "wg-easy",
+      "reason": "Dokploy-safe WireGuard compose without container_name or mapped ports"
     }
   ]
 }
