@@ -35,6 +35,14 @@ interface DomainConfig {
 interface MountConfig {
   filePath?: string;
   content?: string;
+  serviceName?: string;
+  volumeName?: string;
+  volume?: string;
+  name?: string;
+  source?: string;
+  mountPath?: string;
+  target?: string;
+  type?: string;
 }
 
 interface TemplateData {
@@ -323,16 +331,40 @@ class TemplateValidator {
           this.error("config.mounts must be an array");
         } else {
           data.config.mounts.forEach((mount, index) => {
-            if (!mount.filePath) {
-              this.error(`config.mounts[${index}]: Missing required field 'filePath'`);
-            } else if (typeof mount.filePath !== "string") {
-              this.error(`config.mounts[${index}]: filePath must be a string`);
+            const hasFilePath = mount.filePath !== undefined;
+            const volumeName = mount.volumeName ?? mount.volume ?? mount.name ?? mount.source;
+            const mountPath = mount.mountPath ?? mount.target;
+
+            if (hasFilePath) {
+              if (typeof mount.filePath !== "string" || mount.filePath.length === 0) {
+                this.error(`config.mounts[${index}]: filePath must be a non-empty string`);
+              }
+
+              if (mount.content === undefined) {
+                this.error(`config.mounts[${index}]: Missing required field 'content'`);
+              } else if (typeof mount.content !== "string") {
+                this.error(`config.mounts[${index}]: content must be a string`);
+              }
+            } else {
+              if (typeof volumeName !== "string" || volumeName.length === 0) {
+                this.error(
+                  `config.mounts[${index}]: Missing volume name field ('volumeName', 'volume', 'name', or 'source')`
+                );
+              }
+
+              if (typeof mountPath !== "string" || mountPath.length === 0) {
+                this.error(
+                  `config.mounts[${index}]: Missing mount path field ('mountPath' or 'target')`
+                );
+              }
             }
 
-            if (mount.content === undefined) {
-              this.error(`config.mounts[${index}]: Missing required field 'content'`);
-            } else if (typeof mount.content !== "string") {
-              this.error(`config.mounts[${index}]: content must be a string`);
+            if (mount.serviceName !== undefined && typeof mount.serviceName !== "string") {
+              this.error(`config.mounts[${index}]: serviceName must be a string`);
+            }
+
+            if (mount.type !== undefined && typeof mount.type !== "string") {
+              this.error(`config.mounts[${index}]: type must be a string`);
             }
           });
         }
@@ -445,34 +477,36 @@ class TemplateValidator {
             // Validate that mounts can be processed
             if (data.config.mounts) {
               data.config.mounts.forEach((mount, index) => {
-                if (mount.filePath && typeof mount.filePath === "string") {
+                const mountFields: Array<keyof MountConfig> = [
+                  "filePath",
+                  "content",
+                  "serviceName",
+                  "volumeName",
+                  "volume",
+                  "name",
+                  "source",
+                  "mountPath",
+                  "target",
+                  "type",
+                ];
+
+                mountFields.forEach((field) => {
+                  const value = mount[field];
+                  if (typeof value !== "string") return;
+
                   try {
-                    const processed = processValue(mount.filePath, processedVars, schema);
+                    const processed = processValue(value, processedVars, schema);
                     if (processed.includes("${")) {
                       this.warning(
-                        `config.mounts[${index}].filePath: could not fully resolve all variables`
+                        `config.mounts[${index}].${field}: could not fully resolve all variables`
                       );
                     }
                   } catch (e: any) {
                     this.warning(
-                      `config.mounts[${index}].filePath: error processing filePath: ${e.message}`
+                      `config.mounts[${index}].${field}: error processing value: ${e.message}`
                     );
                   }
-                }
-                if (mount.content && typeof mount.content === "string") {
-                  try {
-                    const processed = processValue(mount.content, processedVars, schema);
-                    if (processed.includes("${")) {
-                      this.warning(
-                        `config.mounts[${index}].content: could not fully resolve all variables`
-                      );
-                    }
-                  } catch (e: any) {
-                    this.warning(
-                      `config.mounts[${index}].content: error processing content: ${e.message}`
-                    );
-                  }
-                }
+                });
               });
             }
 
@@ -619,4 +653,3 @@ Examples:
 }
 
 export default TemplateValidator;
-
