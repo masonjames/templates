@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "fork": {
+    "repository": "masonjames/templates",
+    "branch": "main"
+  },
+  "upstream": {
+    "repository": "Dokploy/templates",
+    "branch": "canary"
+  },
+  "last_accepted_upstream_sha": "9d17e6bf8a2fafb26fb692740352d6ed7386d68a",
+  "owned_paths": [
+    ".dagger",
+    ".fork-sync",
+    ".github/CODEOWNERS",
+    ".github/self-managed-watchlist.yml",
+    ".github/workflows/fork-sync-validate.yml",
+    ".github/workflows/notify-portal.yml",
+    ".github/workflows/self-managed-updates.yml",
+    ".github/workflows/upstream-sync.yml",
+    ".github/workflows/zizmor.yml",
+    "curated",
+    "dagger.json",
+    "overrides"
+  ],
+  "tombstones": [
+    ".github/workflows/deploy-preview.yml",
+    ".github/workflows/deploy-production.yml",
+    "meta.json"
+  ],
+  "limits": {
+    "max_incoming_commits": 100,
+    "max_changed_files": 500,
+    "allow_upstream_rewrite": false
+  },
+  "validation": {
+    "pnpm_version": "10.15.1",
+    "security_workflows": [
+      ".github/workflows/fork-sync-validate.yml",
+      ".github/workflows/notify-portal.yml",
+      ".github/workflows/self-managed-updates.yml",
+      ".github/workflows/upstream-sync.yml",
+      ".github/workflows/zizmor.yml"
+    ]
+  },
+  "publication": {
+    "branch": "upstream-sync/dokploy-canary",
+    "label": "upstream-sync",
+    "draft": true,
+    "auto_merge": false
+  }
+}

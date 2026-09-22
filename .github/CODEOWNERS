@@ -1,0 +1,12 @@
+/.fork-sync/ @masonjames
+/.dagger/ @masonjames
+/.github/CODEOWNERS @masonjames
+/.github/self-managed-watchlist.yml @masonjames
+/.github/workflows/fork-sync-validate.yml @masonjames
+/.github/workflows/notify-portal.yml @masonjames
+/.github/workflows/self-managed-updates.yml @masonjames
+/.github/workflows/upstream-sync.yml @masonjames
+/.github/workflows/zizmor.yml @masonjames
+/curated/ @masonjames
+/dagger.json @masonjames
+/overrides/ @masonjames
