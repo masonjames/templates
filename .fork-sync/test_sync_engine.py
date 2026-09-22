@@ -151,6 +151,48 @@ class SyncEngineTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "failed")
         self.assertEqual(receipt["structural_violations"], ["symlink:linked-readme"])
 
+    def test_known_upstream_symlink_is_materialized_as_regular_files(self) -> None:
+        self.git_run("switch", "upstream")
+        (self.repo / "app/public").mkdir(parents=True)
+        os.symlink("../../blueprints", self.repo / "app/public/blueprints")
+        self.commit("known symlink")
+        upstream = self.git_run("rev-parse", "HEAD").strip()
+
+        receipt = self.audit(upstream_sha=upstream)
+        self.assertEqual(receipt["status"], "ready")
+        self.assertEqual(receipt["structural_violations"], [])
+
+        candidate = self.root / "candidate"
+        ENGINE.materialize(
+            self.repo,
+            self.overlay,
+            self.contract_path,
+            candidate,
+            self.fork,
+            upstream,
+        )
+        materialized = candidate / "app/public/blueprints"
+        self.assertTrue(materialized.is_dir())
+        self.assertFalse(materialized.is_symlink())
+        self.assertEqual(
+            (materialized / "demo/meta.json").read_text(),
+            '{"id":"demo"}\n',
+        )
+
+    def test_known_upstream_symlink_with_changed_target_fails_closed(self) -> None:
+        self.git_run("switch", "upstream")
+        (self.repo / "app/public").mkdir(parents=True)
+        os.symlink("../../README.md", self.repo / "app/public/blueprints")
+        self.commit("changed known symlink")
+        upstream = self.git_run("rev-parse", "HEAD").strip()
+
+        receipt = self.audit(upstream_sha=upstream)
+        self.assertEqual(receipt["status"], "failed")
+        self.assertEqual(
+            receipt["structural_violations"],
+            ["symlink-target:app/public/blueprints"],
+        )
+
     def test_materialize_starts_from_upstream_and_applies_overlay_and_tombstone(self) -> None:
         candidate = self.root / "candidate"
         receipt = ENGINE.materialize(
