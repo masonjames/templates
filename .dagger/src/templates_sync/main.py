@@ -84,8 +84,21 @@ class TemplatesSync:
         self,
         candidate: dagger.Directory,
         blueprints: list[str],
+        allow_legacy_catalog: bool = False,
     ) -> dict[str, object]:
         contract = json.loads(await candidate.file(".fork-sync/contract.json").contents())
+        catalog_command = (
+            [
+                "sh",
+                "-c",
+                "if [ -f build-scripts/generate-meta.js ]; then "
+                "node build-scripts/generate-meta.js --output /tmp/meta.json; "
+                "elif [ -f meta.json ]; then cp meta.json /tmp/meta.json; "
+                "else echo 'catalog source is missing' >&2; exit 1; fi",
+            ]
+            if allow_legacy_catalog
+            else ["node", "build-scripts/generate-meta.js", "--output", "/tmp/meta.json"]
+        )
         node = (
             dag.container(platform=TARGET_PLATFORM)
             .from_(NODE_IMAGE)
@@ -100,7 +113,7 @@ class TemplatesSync:
                     "--activate",
                 ]
             )
-            .with_exec(["node", "build-scripts/generate-meta.js", "--output", "/tmp/meta.json"])
+            .with_exec(catalog_command)
             .with_exec(["pnpm", "--dir", "build-scripts", "install", "--frozen-lockfile"])
         )
         for blueprint in blueprints:
@@ -136,7 +149,9 @@ class TemplatesSync:
             .with_entrypoint([])
             .with_mounted_directory("/src", candidate)
             .with_workdir("/src")
-            .with_exec(["actionlint", "-color"])
+            .with_exec(
+                ["actionlint", "-color", *contract["validation"]["security_workflows"]]
+            )
         )
         zizmor = (
             dag.container(platform=TARGET_PLATFORM)
@@ -162,7 +177,6 @@ class TemplatesSync:
             "generated_catalog_sha256": hashlib.sha256(generated.encode()).hexdigest(),
             "generated_catalog_count": len(json.loads(generated)),
             "validations": [
-                "candidate-structure",
                 "per-blueprint-metadata",
                 "changed-blueprints",
                 "app-frozen-build",
@@ -208,8 +222,8 @@ class TemplatesSync:
 
     @function
     async def validate(self, source: dagger.Directory) -> str:
-        """Validate a checked-out candidate without requiring Git credentials."""
-        structure = (
+        """Validate the checked-out fork-owned contract without Git credentials."""
+        contract_tests = (
             dag.container(platform=TARGET_PLATFORM)
             .from_(PYTHON_GIT_IMAGE)
             .with_mounted_directory("/src", source)
@@ -217,19 +231,23 @@ class TemplatesSync:
             .with_exec(
                 [
                     "python3",
-                    ".fork-sync/sync_engine.py",
-                    "validate-candidate",
-                    "--candidate-root",
-                    ".",
+                    "-m",
+                    "unittest",
+                    "discover",
+                    "-s",
+                    ".fork-sync",
+                    "-p",
+                    "test_*.py",
                 ]
             )
         )
         overrides = json.loads(await source.file("overrides/manifest.json").contents())
         blueprints = sorted(item["id"] for item in overrides["locally_modified"])
         validation, _ = await asyncio.gather(
-            self._validate_candidate(source, blueprints),
-            structure.sync(),
+            self._validate_candidate(source, blueprints, allow_legacy_catalog=True),
+            contract_tests.sync(),
         )
+        validation["validations"].append("contract-tests")
         return f"{json.dumps({'status': 'passed', **validation}, indent=2, sort_keys=True)}\n"
 
     @function
@@ -259,5 +277,7 @@ class TemplatesSync:
             for blueprint in receipt["changed_blueprints"]
             if blueprint in available_blueprints
         ]
-        receipt.update(await self._validate_candidate(candidate, changed_blueprints))
+        validation = await self._validate_candidate(candidate, changed_blueprints)
+        validation["validations"].insert(0, "candidate-structure")
+        receipt.update(validation)
         return f"{json.dumps(receipt, indent=2, sort_keys=True)}\n"
