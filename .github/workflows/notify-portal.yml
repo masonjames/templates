@@ -1,13 +1,7 @@
 name: Notify Client Portal
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "blueprints/**"
-      - "build-scripts/generate-meta.js"
-      - "curated/**"
-      - "overrides/manifest.json"
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -7,13 +7,24 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (ROOT / ".github/workflows/upstream-sync.yml").read_text()
+SELF_MANAGED_WORKFLOW = (ROOT / ".github/workflows/self-managed-updates.yml").read_text()
+NOTIFY_WORKFLOW = (ROOT / ".github/workflows/notify-portal.yml").read_text()
+WATCHLIST = (ROOT / ".github/self-managed-watchlist.yml").read_text()
 CONTRACT = json.loads((ROOT / ".fork-sync/contract.json").read_text())
 
 
 class PublisherWorkflowContractTests(unittest.TestCase):
-    def test_schedule_is_timezone_aware_monday_at_nine(self) -> None:
-        self.assertIn('cron: "0 9 * * 1"', WORKFLOW)
-        self.assertIn('timezone: "America/New_York"', WORKFLOW)
+    def test_automations_are_manual_only_until_rebaseline(self) -> None:
+        for workflow in (WORKFLOW, SELF_MANAGED_WORKFLOW, NOTIFY_WORKFLOW):
+            triggers = workflow.split("permissions:", 1)[0]
+            self.assertIn("workflow_dispatch:", triggers)
+            self.assertNotIn("schedule:", triggers)
+            self.assertNotIn("push:", triggers)
+
+    def test_retired_overrides_are_not_self_managed(self) -> None:
+        self.assertIn("id: wordpress", WATCHLIST)
+        self.assertNotIn("id: n8n", WATCHLIST)
+        self.assertNotIn("id: ghost", WATCHLIST)
 
     def test_contract_is_draft_only_and_singleton(self) -> None:
         self.assertTrue(CONTRACT["publication"]["draft"])

@@ -1,9 +1,6 @@
 name: Dagger Upstream Sync
 
 on:
-  schedule:
-    - cron: "0 9 * * 1"
-      timezone: "America/New_York"
   workflow_dispatch:
     inputs:
       bootstrap:
