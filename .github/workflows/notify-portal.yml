@@ -2,10 +2,12 @@ name: Notify Client Portal
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
-      - "meta.json"
+      - "blueprints/**"
+      - "build-scripts/generate-meta.js"
+      - "curated/**"
+      - "overrides/manifest.json"
 
 permissions:
   contents: read
@@ -14,137 +16,113 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout exact revision without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 2
+          persist-credentials: false
 
-      - name: Compute changeset
-        id: changeset
+      - name: Generate exact current and previous catalogs
         run: |
-          # Get list of template IDs that changed in meta.json
-          PREV_IDS=$(git show HEAD~1:meta.json 2>/dev/null | python3 -c "
-          import json, sys
-          try:
-              data = json.load(sys.stdin)
-              for item in data:
-                  print(item['id'] + '=' + item.get('version', 'unknown'))
-          except:
-              pass
-          " || echo "")
-
-          CURR_IDS=$(python3 -c "
-          import json
-          with open('meta.json') as f:
-              data = json.load(f)
-          for item in data:
-              print(item['id'] + '=' + item.get('version', 'unknown'))
-          ")
-
-          # Find version changes
-          CHANGED=""
-          ADDED=""
-          REMOVED=""
-
-          # Build associative lookups
-          declare -A PREV_MAP
-          for entry in $PREV_IDS; do
-            ID="${entry%%=*}"
-            VER="${entry#*=}"
-            PREV_MAP[$ID]="$VER"
-          done
-
-          declare -A CURR_MAP
-          for entry in $CURR_IDS; do
-            ID="${entry%%=*}"
-            VER="${entry#*=}"
-            CURR_MAP[$ID]="$VER"
-          done
-
-          # Detect changes and additions
-          for ID in "${!CURR_MAP[@]}"; do
-            if [ -z "${PREV_MAP[$ID]+x}" ]; then
-              ADDED="${ADDED}${ID},"
-            elif [ "${PREV_MAP[$ID]}" != "${CURR_MAP[$ID]}" ]; then
-              CHANGED="${CHANGED}${ID}:${PREV_MAP[$ID]}->${CURR_MAP[$ID]},"
+          set -euo pipefail
+          materialize_catalog() {
+            local ref="$1"
+            local root="$2"
+            local output="$3"
+            mkdir -p "$root"
+            git archive "$ref" | tar -x -C "$root"
+            if [ -f "$root/build-scripts/generate-meta.js" ]; then
+              node "$root/build-scripts/generate-meta.js" --output "$output"
+            elif [ -f "$root/meta.json" ]; then
+              cp "$root/meta.json" "$output"
+            else
+              echo "${ref} has no supported catalog source" >&2
+              exit 1
             fi
-          done
+          }
 
-          # Detect removals
-          for ID in "${!PREV_MAP[@]}"; do
-            if [ -z "${CURR_MAP[$ID]+x}" ]; then
-              REMOVED="${REMOVED}${ID},"
-            fi
-          done
+          materialize_catalog HEAD /tmp/templates-current /tmp/current-meta.json
+          materialize_catalog HEAD^ /tmp/templates-previous /tmp/previous-meta.json
 
-          # Remove trailing commas
-          CHANGED="${CHANGED%,}"
-          ADDED="${ADDED%,}"
-          REMOVED="${REMOVED%,}"
-
-          echo "changed=${CHANGED}" >> $GITHUB_OUTPUT
-          echo "added=${ADDED}" >> $GITHUB_OUTPUT
-          echo "removed=${REMOVED}" >> $GITHUB_OUTPUT
-
-          TOTAL=$(python3 -c "
+      - name: Bind dispatch payload to exact source content
+        env:
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
           import json
-          with open('meta.json') as f:
-              print(len(json.load(f)))
-          ")
-          echo "total=${TOTAL}" >> $GITHUB_OUTPUT
+          import os
+          from pathlib import Path
 
-          if [ -n "$CHANGED" ] || [ -n "$ADDED" ] || [ -n "$REMOVED" ]; then
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-          fi
+          def read_json(path):
+              return json.loads(Path(path).read_text())
 
-      - name: Dispatch to client-portal
-        if: steps.changeset.outputs.has_changes == 'true'
+          def digest(path):
+              return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+          previous = {item["id"]: item.get("version", "unknown") for item in read_json("/tmp/previous-meta.json")}
+          current_entries = read_json("/tmp/current-meta.json")
+          current = {item["id"]: item.get("version", "unknown") for item in current_entries}
+          changed = sorted(
+              f"{item_id}:{previous[item_id]}->{current[item_id]}"
+              for item_id in previous.keys() & current.keys()
+              if previous[item_id] != current[item_id]
+          )
+          added = sorted(current.keys() - previous.keys())
+          removed = sorted(previous.keys() - current.keys())
+          source_repo = os.environ["SOURCE_REPO"]
+          source_sha = os.environ["SOURCE_SHA"]
+          payload = {
+              "event_type": "template-catalog-updated",
+              "client_payload": {
+                  "changed": changed,
+                  "added": added,
+                  "removed": removed,
+                  "source_repo": source_repo,
+                  "source_sha": source_sha,
+                  "catalog_sha256": digest("/tmp/current-meta.json"),
+                  "override_manifest_sha256": digest("overrides/manifest.json"),
+                  "curated_top25_sha256": digest("curated/top-25.json"),
+                  "test_registry_sha256": digest("curated/test-registry.json"),
+                  "blueprint_count": len(current_entries),
+                  "commit_url": f"https://github.com/{source_repo}/commit/{source_sha}",
+              },
+          }
+          Path("/tmp/client-portal-dispatch.json").write_text(json.dumps(payload, separators=(",", ":")))
+          Path("/tmp/client-portal-dispatch-summary.json").write_text(
+              json.dumps(payload["client_payload"], indent=2) + "\n"
+          )
+          PY
+
+      - name: Dispatch exact catalog receipt to Client Portal
         env:
           PORTAL_DISPATCH_TOKEN: ${{ secrets.PORTAL_DISPATCH_TOKEN }}
-          CHANGED: ${{ steps.changeset.outputs.changed }}
-          ADDED: ${{ steps.changeset.outputs.added }}
-          REMOVED: ${{ steps.changeset.outputs.removed }}
-          TOTAL: ${{ steps.changeset.outputs.total }}
-          COMMIT_SHA: ${{ github.sha }}
-          REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           if [ -z "$PORTAL_DISPATCH_TOKEN" ]; then
-            echo "PORTAL_DISPATCH_TOKEN not set. Skipping dispatch."
-            exit 0
+            echo "PORTAL_DISPATCH_TOKEN is required" >&2
+            exit 1
           fi
-
-          # Build payload with proper JSON encoding
-          PAYLOAD=$(python3 -c "
-          import json, os
-          changed = os.environ.get('CHANGED', '')
-          added = os.environ.get('ADDED', '')
-          removed = os.environ.get('REMOVED', '')
-          payload = {
-              'event_type': 'template-catalog-updated',
-              'client_payload': {
-                  'changed': [x for x in changed.split(',') if x],
-                  'added': [x for x in added.split(',') if x],
-                  'removed': [x for x in removed.split(',') if x],
-                  'total_templates': int(os.environ.get('TOTAL', '0')),
-                  'commit_sha': os.environ['COMMIT_SHA'],
-                  'commit_url': f'https://github.com/{os.environ[\"REPO\"]}/commit/{os.environ[\"COMMIT_SHA\"]}'
-              }
-          }
-          print(json.dumps(payload))
-          ")
-
-          curl -f -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${PORTAL_DISPATCH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/masonjames/client-portal/dispatches" \
-            -d "$PAYLOAD" \
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${PORTAL_DISPATCH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --data-binary @/tmp/client-portal-dispatch.json \
             --max-time 30 \
-            --retry 2
+            --retry 2 \
+            https://api.github.com/repos/masonjames/client-portal/dispatches
 
-          echo "Dispatched template-catalog-updated event to client-portal."
-          echo "  Changed: ${CHANGED}"
-          echo "  Added: ${ADDED}"
-          echo "  Removed: ${REMOVED}"
+      - name: Record non-secret dispatch summary
+        if: always()
+        run: |
+          if [ -f /tmp/client-portal-dispatch-summary.json ]; then
+            {
+              echo "## Client Portal catalog dispatch"
+              echo '```json'
+              cat /tmp/client-portal-dispatch-summary.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

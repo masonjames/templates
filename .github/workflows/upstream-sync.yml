@@ -1,235 +1,338 @@
-name: Upstream Sync
+name: Dagger Upstream Sync
 
 on:
   schedule:
-    # Run weekly on Mondays at 08:00 UTC.
-    - cron: "0 8 * * 1"
+    - cron: "0 9 * * 1"
+      timezone: "America/New_York"
   workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: Materialize the attended one-time rebaseline without publishing it
+        required: false
+        default: false
+        type: boolean
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
+
+concurrency:
+  group: templates-upstream-sync
+  cancel-in-progress: false
 
 jobs:
-  sync:
-    runs-on: ubuntu-latest
+  validate:
+    name: Audit and validate exact upstream candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.classify.outputs.status }}
+      fork_sha: ${{ steps.refs.outputs.fork_sha }}
+      upstream_sha: ${{ steps.refs.outputs.upstream_sha }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, node24
+      - name: Checkout exact fork main without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: main
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Add upstream remote
+      - name: Resolve exact refs and create a credential-free Git bundle
+        id: refs
         run: |
-          git remote add upstream https://github.com/Dokploy/templates.git || true
-          git fetch upstream canary
-
-      - name: Check for changes
-        id: check
-        run: |
-          DIFF=$(git diff HEAD...upstream/canary --stat)
-          if [ -z "$DIFF" ]; then
-            echo "changed=false" >> $GITHUB_OUTPUT
-            echo "No upstream changes detected."
-          else
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "$DIFF" > /tmp/diff-stat.txt
-
-            # Count changes
-            NEW=$(git diff HEAD...upstream/canary --diff-filter=A --name-only | wc -l | tr -d ' ')
-            MODIFIED=$(git diff HEAD...upstream/canary --diff-filter=M --name-only | wc -l | tr -d ' ')
-            DELETED=$(git diff HEAD...upstream/canary --diff-filter=D --name-only | wc -l | tr -d ' ')
-            echo "new=$NEW" >> $GITHUB_OUTPUT
-            echo "modified=$MODIFIED" >> $GITHUB_OUTPUT
-            echo "deleted=$DELETED" >> $GITHUB_OUTPUT
-
-            echo "Upstream changes: $NEW new, $MODIFIED modified, $DELETED deleted"
+          set -euo pipefail
+          git fetch --no-tags --force \
+            https://github.com/Dokploy/templates.git \
+            refs/heads/canary:refs/remotes/upstream/canary
+          FORK_SHA=$(git rev-parse HEAD)
+          UPSTREAM_SHA=$(git rev-parse refs/remotes/upstream/canary)
+          if [[ ! "$FORK_SHA" =~ ^[0-9a-f]{40}$ || ! "$UPSTREAM_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Exact fork and upstream SHAs are required" >&2
+            exit 1
           fi
+          git bundle create /tmp/templates-sync.bundle HEAD refs/remotes/upstream/canary
+          git bundle verify /tmp/templates-sync.bundle
+          echo "fork_sha=$FORK_SHA" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Create sync branch and merge
-        if: steps.check.outputs.changed == 'true'
-        id: merge
-        run: |
-          DATE=$(date +%Y-%m-%d)
-          BRANCH="upstream-sync/${DATE}"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git checkout -B "$BRANCH"
-
-          write_overrides() {
-            if [ ! -f overrides/manifest.json ]; then
-              : > /tmp/override-blueprints.txt
-              return 0
-            fi
-
-            python3 - <<'PY' > /tmp/override-blueprints.txt
-          import json
-
-          with open("overrides/manifest.json") as f:
-              data = json.load(f)
-
-          for item in data.get("locally_modified", []):
-              print(item["id"])
-          PY
-          }
-
-          # Attempt merge
-          if ! git merge upstream/canary --no-edit; then
-            echo "Merge conflicts detected. Resolving overrides..."
-
-            # Read override manifest and resolve conflicts for our blueprints
-            write_overrides
-            while IFS= read -r OVERRIDE_ID; do
-              [ -z "$OVERRIDE_ID" ] && continue
-
-              # For overridden blueprints, keep our version
-              if git diff --name-only --diff-filter=U | grep -q "blueprints/${OVERRIDE_ID}/"; then
-                echo "Preserving our override for: ${OVERRIDE_ID}"
-                git checkout --ours -- "blueprints/${OVERRIDE_ID}/" 2>/dev/null || true
-                git add "blueprints/${OVERRIDE_ID}/" 2>/dev/null || true
-              fi
-            done < /tmp/override-blueprints.txt
-
-            # For everything else, accept theirs on remaining conflicts
-            REMAINING=$(git diff --name-only --diff-filter=U)
-            if [ -n "$REMAINING" ]; then
-              echo "Accepting upstream version for remaining conflicts:"
-              echo "$REMAINING"
-              echo "$REMAINING" | while read -r file; do
-                git checkout --theirs "$file"
-                git add "$file"
-              done
-            fi
-
-            git commit --no-edit || true
-          fi
-
-          write_overrides
-          if [ -s /tmp/override-blueprints.txt ]; then
-            echo "Restoring configured blueprint overrides from main..."
-            while IFS= read -r OVERRIDE_ID; do
-              [ -z "$OVERRIDE_ID" ] && continue
-
-              if git cat-file -e "origin/main:blueprints/${OVERRIDE_ID}" 2>/dev/null; then
-                echo "Restoring local override for: ${OVERRIDE_ID}"
-                git checkout origin/main -- "blueprints/${OVERRIDE_ID}/"
-                git add "blueprints/${OVERRIDE_ID}/"
-              else
-                echo "Override ${OVERRIDE_ID} is not present on origin/main; skipping."
-              fi
-            done < /tmp/override-blueprints.txt
-
-            if ! git diff --cached --quiet; then
-              git commit -m "fix: preserve local blueprint overrides"
-            else
-              echo "No override drift detected."
-            fi
-          fi
-
-          git push --force-with-lease origin "$BRANCH"
-          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
-
-      - name: Check curated impact
-        if: steps.check.outputs.changed == 'true'
-        id: curated
-        run: |
-          if [ ! -f curated/top-25.json ]; then
-            echo "affected=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          CURATED_IDS=$(python3 -c "
-          import json
-          with open('curated/top-25.json') as f:
-              data = json.load(f)
-          for t in data.get('templates', []):
-              print(t['id'])
-          ")
-
-          AFFECTED=""
-          CHANGED_FILES=$(git diff HEAD...upstream/canary --name-only)
-
-          for ID in $CURATED_IDS; do
-            if echo "$CHANGED_FILES" | grep -q "blueprints/${ID}/"; then
-              AFFECTED="${AFFECTED}- ${ID}\n"
-            fi
-          done
-
-          if [ -n "$AFFECTED" ]; then
-            echo "affected=true" >> $GITHUB_OUTPUT
-            echo -e "$AFFECTED" > /tmp/curated-affected.txt
-          else
-            echo "affected=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create PR
-        if: steps.check.outputs.changed == 'true'
+      - name: Resolve attended bootstrap flags
+        id: flags
         env:
-          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
+          REQUESTED_BOOTSTRAP: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap || false }}
         run: |
-          DATE=$(date +%Y-%m-%d)
-
-          CURATED_NOTE=""
-          if [ "${{ steps.curated.outputs.affected }}" == "true" ]; then
-            CURATED_NOTE="
-          ## Curated Template Impact
-
-          The following curated templates were modified upstream:
-          $(cat /tmp/curated-affected.txt)
-
-          Review these changes carefully."
+          if [ "$REQUESTED_BOOTSTRAP" = "true" ]; then
+            echo "audit=--bootstrap=true" >> "$GITHUB_OUTPUT"
+            echo "materialize=--bootstrap=true --allow-needs-review=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "audit=" >> "$GITHUB_OUTPUT"
+            echo "materialize=" >> "$GITHUB_OUTPUT"
           fi
 
-          # Check if a PR already exists for this branch
-          EXISTING=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "${{ steps.merge.outputs.branch }}" --state open --json number --jq '.[0].number')
-          if [ -n "$EXISTING" ]; then
-            echo "PR #${EXISTING} already exists for this branch. Skipping creation."
-            exit 0
+      - name: Audit exact refs through Dagger
+        id: audit
+        uses: dagger/dagger-for-github@496f1b3d8b0d823834c13e67cf8a8e08ca3b9602 # v8.4.0
+        with:
+          version: "0.21.8"
+          call: >-
+            audit
+            --source=.
+            --bundle=/tmp/templates-sync.bundle
+            --fork-sha=${{ steps.refs.outputs.fork_sha }}
+            --upstream-sha=${{ steps.refs.outputs.upstream_sha }}
+            ${{ steps.flags.outputs.audit }}
+
+      - name: Classify audit without publishing
+        id: classify
+        env:
+          AUDIT_RECEIPT: ${{ steps.audit.outputs.stdout }}
+        run: |
+          printf '%s\n' "$AUDIT_RECEIPT" > /tmp/receipt.json
+          STATUS=$(jq -r .status /tmp/receipt.json)
+          case "$STATUS" in
+            noop|ready|needs_review|failed) ;;
+            *) echo "Dagger audit returned unknown status ${STATUS}" >&2; exit 1 ;;
+          esac
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          jq . /tmp/receipt.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate materialized candidate through Dagger
+        id: check
+        if: steps.classify.outputs.status == 'ready' || (github.event_name == 'workflow_dispatch' && inputs.bootstrap)
+        continue-on-error: true
+        uses: dagger/dagger-for-github@496f1b3d8b0d823834c13e67cf8a8e08ca3b9602 # v8.4.0
+        with:
+          version: "0.21.8"
+          call: >-
+            check
+            --source=.
+            --bundle=/tmp/templates-sync.bundle
+            --fork-sha=${{ steps.refs.outputs.fork_sha }}
+            --upstream-sha=${{ steps.refs.outputs.upstream_sha }}
+            ${{ steps.flags.outputs.materialize }}
+
+      - name: Bind validated receipt
+        if: steps.check.outcome == 'success'
+        env:
+          CHECK_RECEIPT: ${{ steps.check.outputs.stdout }}
+        run: printf '%s\n' "$CHECK_RECEIPT" > /tmp/receipt.json
+
+      - name: Export deterministic candidate
+        if: steps.check.outcome == 'success'
+        uses: dagger/dagger-for-github@496f1b3d8b0d823834c13e67cf8a8e08ca3b9602 # v8.4.0
+        with:
+          version: "0.21.8"
+          call: >-
+            materialize
+            --source=.
+            --bundle=/tmp/templates-sync.bundle
+            --fork-sha=${{ steps.refs.outputs.fork_sha }}
+            --upstream-sha=${{ steps.refs.outputs.upstream_sha }}
+            ${{ steps.flags.outputs.materialize }}
+            export --path=/tmp/candidate
+
+      - name: Package immutable evidence artifact
+        if: always() && steps.classify.outcome == 'success'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/templates-sync-artifact
+          cp /tmp/receipt.json /tmp/templates-sync-artifact/receipt.json
+          if [ -d /tmp/candidate ]; then
+            tar \
+              --sort=name \
+              --mtime='UTC 1970-01-01' \
+              --owner=0 \
+              --group=0 \
+              --numeric-owner \
+              -cf /tmp/templates-sync-artifact/candidate.tar \
+              -C /tmp/candidate .
+          fi
+          tar -cf /tmp/templates-sync-artifact.tar -C /tmp/templates-sync-artifact .
+
+      - name: Upload receipt and optional candidate
+        if: always() && steps.classify.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: templates-sync-${{ github.run_id }}
+          path: /tmp/templates-sync-artifact.tar
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Stop on non-publishable or failed validation
+        if: always() && steps.classify.outcome == 'success'
+        env:
+          STATUS: ${{ steps.classify.outputs.status }}
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+          ATTENDED_BOOTSTRAP: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap || false }}
+        run: |
+          if [ "$CHECK_OUTCOME" = "failure" ]; then
+            echo "Dagger candidate validation failed; inspect the retained run logs and receipt." >&2
+            exit 1
+          fi
+          if [ "$STATUS" = "failed" ]; then
+            echo "The upstream audit failed closed; no publisher was entered." >&2
+            exit 1
+          fi
+          if [ "$STATUS" = "needs_review" ] && [ "$ATTENDED_BOOTSTRAP" != "true" ]; then
+            echo "The upstream audit requires attended review; no publisher was entered." >&2
+            exit 1
           fi
 
-          AHEAD_BY=""
-          for attempt in {1..6}; do
-            AHEAD_BY=$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${{ steps.merge.outputs.branch }}" --jq '.ahead_by' 2>/dev/null || true)
-            if [ -n "$AHEAD_BY" ]; then
-              break
+  publish-draft:
+    name: Publish one signed draft pull request
+    needs: validate
+    if: needs.validate.outputs.status == 'ready'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions: {}
+    steps:
+      - name: Mint repository-scoped GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.TEMPLATES_SYNC_APP_ID }}
+          private-key: ${{ secrets.TEMPLATES_SYNC_APP_PRIVATE_KEY }}
+          owner: masonjames
+          repositories: templates
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Checkout exact fork parent without persisted credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.validate.outputs.fork_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download immutable candidate artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: templates-sync-${{ github.run_id }}
+          path: /tmp/templates-sync-download
+
+      - name: Verify, sign, and publish exact candidate branch
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          FORK_SHA: ${{ needs.validate.outputs.fork_sha }}
+          UPSTREAM_SHA: ${{ needs.validate.outputs.upstream_sha }}
+          BOT_NAME: ${{ vars.TEMPLATES_SYNC_BOT_NAME }}
+          BOT_EMAIL: ${{ vars.TEMPLATES_SYNC_BOT_EMAIL }}
+          SSH_SIGNING_KEY: ${{ secrets.TEMPLATES_SYNC_SSH_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          for required in GH_TOKEN FORK_SHA UPSTREAM_SHA BOT_NAME BOT_EMAIL SSH_SIGNING_KEY; do
+            if [ -z "${!required}" ]; then
+              echo "Required publisher input ${required} is missing" >&2
+              exit 1
             fi
-            echo "Waiting for GitHub to index ${{ steps.merge.outputs.branch }}..."
-            sleep 5
           done
-
-          if [ "${AHEAD_BY:-0}" = "0" ]; then
-            echo "No commits between main and ${{ steps.merge.outputs.branch }}. Skipping PR creation."
-            exit 0
+          tar -xf /tmp/templates-sync-download/templates-sync-artifact.tar -C /tmp
+          mkdir -p /tmp/candidate
+          tar -xf /tmp/candidate.tar -C /tmp/candidate
+          if [ "$(jq -r .status /tmp/receipt.json)" != "ready" ]; then
+            echo "Only a ready receipt may enter the publisher" >&2
+            exit 1
+          fi
+          if [ "$(jq -r .fork_sha /tmp/receipt.json)" != "$FORK_SHA" ] \
+            || [ "$(jq -r .upstream_sha /tmp/receipt.json)" != "$UPSTREAM_SHA" ]; then
+            echo "Receipt ref binding mismatch" >&2
+            exit 1
+          fi
+          if [ "$(git rev-parse HEAD)" != "$FORK_SHA" ]; then
+            echo "Publisher checkout does not match the validated fork parent" >&2
+            exit 1
+          fi
+          CANDIDATE_DIGEST=$(python3 .fork-sync/sync_engine.py digest --root /tmp/candidate)
+          if [ "$CANDIDATE_DIGEST" != "$(jq -r .candidate_digest /tmp/receipt.json)" ]; then
+            echo "Candidate digest mismatch" >&2
+            exit 1
           fi
 
-          gh pr create \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "Upstream sync ${DATE}" \
-            --body "$(cat <<EOF
-          ## Upstream Sync
+          git fetch --no-tags https://github.com/Dokploy/templates.git "$UPSTREAM_SHA"
+          git cat-file -e "${UPSTREAM_SHA}^{commit}"
+          export GIT_INDEX_FILE=/tmp/templates-sync.index
+          git read-tree --empty
+          git --work-tree=/tmp/candidate add --all --force .
+          TREE_SHA=$(git write-tree)
 
-          Weekly sync from \`Dokploy/templates:canary\`.
+          mkdir -p /tmp/templates-sync-signing
+          printf '%s' "$SSH_SIGNING_KEY" > /tmp/templates-sync-signing/private-key
+          chmod 600 /tmp/templates-sync-signing/private-key
+          ssh-keygen -y -f /tmp/templates-sync-signing/private-key \
+            > /tmp/templates-sync-signing/public-key
+          printf '%s %s\n' "$BOT_EMAIL" "$(cat /tmp/templates-sync-signing/public-key)" \
+            > /tmp/templates-sync-signing/allowed-signers
+          git config user.name "$BOT_NAME"
+          git config user.email "$BOT_EMAIL"
+          git config gpg.format ssh
+          git config user.signingkey /tmp/templates-sync-signing/private-key
+          git config gpg.ssh.allowedSignersFile /tmp/templates-sync-signing/allowed-signers
+          GIT_AUTHOR_DATE=$(git show -s --format=%cI "$UPSTREAM_SHA")
+          export GIT_AUTHOR_DATE
+          export GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
+          COMMIT_SHA=$(printf 'chore: sync Dokploy templates canary\n\nUpstream: %s\n' "$UPSTREAM_SHA" \
+            | git commit-tree -S "$TREE_SHA" -p "$FORK_SHA" -p "$UPSTREAM_SHA")
+          git verify-commit "$COMMIT_SHA"
+          if [ "$(git show -s --format=%P "$COMMIT_SHA")" != "$FORK_SHA $UPSTREAM_SHA" ]; then
+            echo "Signed candidate parents are incorrect" >&2
+            exit 1
+          fi
 
-          | Metric | Count |
-          |--------|-------|
-          | New files | ${{ steps.check.outputs.new }} |
-          | Modified | ${{ steps.check.outputs.modified }} |
-          | Deleted | ${{ steps.check.outputs.deleted }} |
+          BRANCH=upstream-sync/dokploy-canary
+          REMOTE_SHA=$(git ls-remote \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/heads/${BRANCH}" | awk '{print $1}')
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "${COMMIT_SHA}:refs/heads/${BRANCH}" \
+            --force-with-lease="refs/heads/${BRANCH}:${REMOTE_SHA}"
 
-          <details>
-          <summary>Diff stat</summary>
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          receipt = json.loads(Path("/tmp/receipt.json").read_text())
+          body = f"""## Governed upstream sync
 
-          \`\`\`
-          $(cat /tmp/diff-stat.txt)
-          \`\`\`
-          </details>
+          This draft was materialized from exact refs by the credential-free Dagger contract.
 
-          Blueprints in \`overrides/manifest.json\` were restored from \`main\` after the upstream merge.
-          ${CURATED_NOTE}
-          EOF
-          )" \
+          | Evidence | Value |
+          |---|---|
+          | Fork parent | `{receipt['fork_sha']}` |
+          | Upstream parent | `{receipt['upstream_sha']}` |
+          | Incoming commits | {receipt['incoming_commit_count']} |
+          | Changed files | {receipt['incoming_file_count']} |
+          | Candidate digest | `{receipt['candidate_digest']}` |
+          | Generated templates | {receipt['generated_catalog_count']} |
+
+          Owned-path collisions: {len(receipt['owned_path_collisions'])}. Validations: {', '.join(receipt['validations'])}.
+
+          This pull request cannot merge or deploy automatically.
+          """
+          Path("/tmp/pr-body.md").write_text(body)
+          PY
+          gh label create upstream-sync \
+            --color 1D76DB \
+            --description "Credential-free Dagger upstream synchronization" \
+            --force
+          EXISTING=$(gh pr list \
+            --head "$BRANCH" \
             --base main \
-            --head "${{ steps.merge.outputs.branch }}"
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh pr edit "$EXISTING" \
+              --title "Sync Dokploy templates canary" \
+              --body-file /tmp/pr-body.md \
+              --add-label upstream-sync
+            if [ "$(gh pr view "$EXISTING" --json isDraft --jq .isDraft)" != "true" ]; then
+              gh pr ready "$EXISTING" --undo
+            fi
+          else
+            gh pr create \
+              --draft \
+              --base main \
+              --head "$BRANCH" \
+              --title "Sync Dokploy templates canary" \
+              --body-file /tmp/pr-body.md \
+              --label upstream-sync
+          fi
