@@ -7,8 +7,11 @@ draft pull request only after the receipt status is `ready`.
 
 The contract intentionally fails closed for upstream rewrites, undeclared
 overlay material, owned-path collisions, more than 100 incoming commits, or
-more than 500 changed files. Root metadata, symlinks, submodules, and special
-files are structural violations unless an exact path is explicitly tombstoned.
+more than 500 changed files. Root metadata, submodules, special files, and
+symlinks are structural violations unless an exact path is explicitly
+tombstoned. The sole symlink exception is upstream's exact
+`app/public/blueprints -> ../../blueprints` link, which is materialized as
+ordinary files; a changed target or any additional symlink fails closed.
 The one-time rebaseline is an attended exception to drift limits only:
 it may be materialized and validated with `bootstrap`, but it is never
 published by the scheduled workflow and cannot bypass structural violations.

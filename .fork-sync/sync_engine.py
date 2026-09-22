@@ -19,6 +19,9 @@ from typing import Any, Iterable
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 BLUEPRINT_RE = re.compile(r"^blueprints/([^/]+)/")
 GENERATED_OVERLAY_PARTS = {".git", ".venv", "__pycache__"}
+MATERIALIZED_SYMLINK_PATH = "app/public/blueprints"
+MATERIALIZED_SYMLINK_TARGET = "../../blueprints"
+MATERIALIZED_SYMLINK_SOURCE = "blueprints"
 
 
 class SyncError(RuntimeError):
@@ -125,7 +128,11 @@ def upstream_structural_violations(
         if any(path_matches(path, tombstone) for tombstone in declared_tombstones):
             continue
         if mode == "120000":
-            violations.append(f"symlink:{path}")
+            target = git(repo, "cat-file", "-p", f"{upstream_sha}:{path}")
+            if path != MATERIALIZED_SYMLINK_PATH:
+                violations.append(f"symlink:{path}")
+            elif target != MATERIALIZED_SYMLINK_TARGET:
+                violations.append(f"symlink-target:{path}")
         elif mode == "160000" or object_type == "commit":
             violations.append(f"submodule:{path}")
     if "meta.json" not in declared_tombstones:
@@ -356,6 +363,19 @@ def assert_no_submodules(repo: Path, upstream_sha: str) -> None:
             raise SyncError(f"upstream candidate contains a submodule: {line.split(chr(9), 1)[-1]}")
 
 
+def materialize_known_upstream_symlink(candidate_root: Path) -> None:
+    link = candidate_root / MATERIALIZED_SYMLINK_PATH
+    if not link.is_symlink():
+        return
+    if os.readlink(link) != MATERIALIZED_SYMLINK_TARGET:
+        raise SyncError(f"unexpected symlink target: {MATERIALIZED_SYMLINK_PATH}")
+    source = candidate_root / MATERIALIZED_SYMLINK_SOURCE
+    if source.is_symlink() or not source.is_dir():
+        raise SyncError(f"symlink source is not a regular directory: {MATERIALIZED_SYMLINK_SOURCE}")
+    link.unlink()
+    shutil.copytree(source, link, copy_function=shutil.copy2)
+
+
 def validate_candidate(candidate_root: Path) -> None:
     if (candidate_root / "meta.json").exists():
         raise SyncError("candidate contains forbidden root meta.json")
@@ -414,6 +434,8 @@ def materialize(
             raise SyncError(f"failed to archive upstream tree: {completed.stderr.strip()}")
         with tarfile.open(archive.name) as tar:
             tar.extractall(candidate_root, filter="data")
+
+    materialize_known_upstream_symlink(candidate_root)
 
     for relative in contract["owned_paths"]:
         copy_overlay_path(overlay_root, candidate_root, relative)
